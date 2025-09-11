@@ -8,6 +8,7 @@ class PetVideos(models.Model):
     file = models.FileField(upload_to='videos/')
     distance = models.FloatField(default=0)
     pet_type = models.CharField(max_length=32,  default="STANDING_JUMP")
+    processed_file = models.FileField(upload_to='post_processed_video/', blank=True, null=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

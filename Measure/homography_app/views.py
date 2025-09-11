@@ -4,12 +4,10 @@ from django.views.decorators.csrf import csrf_exempt
 from django.core.files.base import ContentFile
 import cv2
 import numpy as np
-from .helper import merge_close_points
-
+from .helper import merge_close_points, DEFAULT_HSV, TOL_S, TOL_H, TOL_V
 from .models import PetVideos, SingletonHomographicMatrixModel
-
-DEFAULT_HSV = np.array([26, 116, 152], dtype=np.uint8)
-TOL_H, TOL_S, TOL_V = 10, 50, 50
+from .task import process_video_task
+from django.core.exceptions import ObjectDoesNotExist
 
 
 @csrf_exempt
@@ -26,6 +24,7 @@ def upload_video(request):
             participant_name=participant_name,
             pet_type=pet_type
         )
+        process_video_task(obj.id)
         return JsonResponse({
             'status': 'success',
             'name': obj.name,
@@ -142,9 +141,30 @@ def upload_calibration_video(request):
 
 def list_videos(request):
     videos = PetVideos.objects.all().order_by('-uploaded_at')
-    data = [{'name': v.name, 'file': v.file.url, 'distance': v.distance, 'participant_name': v.participant_name, "pet_type": v.pet_type} for v
+    data = [{'name': v.name, 'file': v.file.url, 'distance': v.distance,
+             'participant_name': v.participant_name, "pet_type": v.pet_type, 'id': v.id} for v
             in videos]
     return JsonResponse({'videos': data})
+
+
+def get_video_detail(request):
+    video_id = request.GET.get('id')
+    if not video_id:
+        return JsonResponse({'status': 'error', 'message': 'No video ID provided'}, status=400)
+
+    try:
+        video = PetVideos.objects.get(id=video_id)
+        if not video.processed_file:
+            return JsonResponse({'status': 'error', 'message': 'Processed video not available'}, status=404)
+
+        video_url = request.build_absolute_uri(video.processed_file.url)
+        return JsonResponse({
+            'status': 'success',
+            'processed_video_url': video_url
+        })
+    except PetVideos.DoesNotExist:
+        return JsonResponse({'status': 'error', 'message': 'Video not found'}, status=404)
+
 
 
 def get_homograph(request):

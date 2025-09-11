@@ -6,6 +6,6 @@ urlpatterns = [
     path('list_videos/', views.list_videos), # get all videos
     path('calibrate/',views.upload_calibration_video), #calibrate video and generate homo matrix
     path('calibration_info/', views.get_homograph), #get calib info
-    #path('get_processed_video/', blah blah), #get processed video
+    path('get_processed_video/', views.get_video_detail), #get processed video
 ]
 
