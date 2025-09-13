@@ -2,7 +2,7 @@ import numpy as np
 import cv2
 
 DEFAULT_HSV = np.array([26, 116, 152], dtype=np.uint8)
-TOL_H, TOL_S, TOL_V = 10, 50, 50
+TOL_H, TOL_S, TOL_V = 10, 50, 80
 
 def merge_close_points(points, threshold=10):
     merged = []
