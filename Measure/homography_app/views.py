@@ -171,7 +171,7 @@ def process_image(request):
         highlight = cv2.convertScaleAbs(img, alpha=1.8, beta=40)
         output_img = img.copy()
         output_img[mask > 0] = highlight[mask > 0]
-
+        cv2.circle(output_img, (x, y), 8, (25, 48, 228), -1)
         _, buffer = cv2.imencode('.jpg', output_img)
         encoded_image = base64.b64encode(buffer).decode('utf-8')
 

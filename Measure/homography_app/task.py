@@ -30,42 +30,51 @@ def process_video_task(petvideo_id):
     final_output_path = os.path.join(output_dir, f"processed_{original_name}")
 
     try:
-        # --- OpenCV write ---
         cap = cv2.VideoCapture(video_path)
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
         out = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
+        singleton = SingletonHomographicMatrixModel.load()
+
+        if singleton.hsv_value:  # Will be {} if not set
+            h = singleton.hsv_value.get('h', DEFAULT_HSV[0])
+            s = singleton.hsv_value.get('s', DEFAULT_HSV[1])
+            v = singleton.hsv_value.get('v', DEFAULT_HSV[2])
+        else:
+            h, s, v = DEFAULT_HSV
+
+        lower = np.array([max(h - TOL_H, 0), max(s - TOL_S, 0), max(v - TOL_V, 0)])
+        upper = np.array([min(h + TOL_H, 179), min(s + TOL_S, 255), min(v + TOL_V, 255)])
 
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
 
-            # HSV detection
+            # HSV detection only
             hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            singleton = SingletonHomographicMatrixModel.load()
-            if singleton.hsv_value:  # will be {} if not set
-                h = singleton.hsv_value.get('h', DEFAULT_HSV[0])
-                s = singleton.hsv_value.get('s', DEFAULT_HSV[1])
-                v = singleton.hsv_value.get('v', DEFAULT_HSV[2])
-            else:
-                h, s, v = DEFAULT_HSV
-            lower = np.array([max(h - TOL_H, 0), max(s - TOL_S, 0), max(v - TOL_V, 0)])
-            upper = np.array([min(h + TOL_H, 179), min(s + TOL_S, 255), min(v + TOL_V, 255)])
             mask = cv2.inRange(hsv_frame, lower, upper)
+            mask = cv2.medianBlur(mask, 5)
+
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             detected_points = []
             for cnt in contours:
-                M = cv2.moments(cnt)
-                if M["m00"] > 0:
-                    cx = int(M["m10"] / M["m00"])
-                    cy = int(M["m01"] / M["m00"])
-                    detected_points.append((cx, cy))
+                if cv2.contourArea(cnt) > 10:
+                    M = cv2.moments(cnt)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        detected_points.append((cx, cy))
+
             detected_points = merge_close_points(detected_points, threshold=40)
-            for pt in detected_points[:4 if len(detected_points) > 4 else len(detected_points)]:
-                cv2.circle(frame, pt, 15, (0, 0, 255), -1)
+
+            if detected_points:
+                # Select the point with the largest Y (lowest in image)
+                lowest_point = max(detected_points, key=lambda p: p[1])
+                cv2.circle(frame, lowest_point, 15, (0, 0, 255), -1)
 
             out.write(frame)
 
@@ -81,7 +90,7 @@ def process_video_task(petvideo_id):
             final_output_path
         ], check=True)
 
-        # Save ffmpeg output to model
+        # Save processed video to model
         with open(final_output_path, 'rb') as f:
             video_obj.processed_file.save(f"processed_{original_name}", File(f), save=False)
 
@@ -89,7 +98,7 @@ def process_video_task(petvideo_id):
         video_obj.is_video_processed = True
         video_obj.save()
 
-        # Cleanup temp files
+        # Cleanup temporary files
         for path in [temp_output_path, final_output_path]:
             if os.path.exists(path):
                 os.remove(path)
