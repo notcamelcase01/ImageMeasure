@@ -28,6 +28,7 @@ class SingletonHomographicMatrixModel(models.Model):
     matrix = models.FileField(upload_to='homograph/')
     file = models.FileField(upload_to="calibrated_images/")
     unit_distance = models.IntegerField(default=60)
+    hsv_value = models.JSONField(default=dict)
     class Meta:
         constraints = [
             CheckConstraint(

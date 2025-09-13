@@ -5,7 +5,7 @@ from django.conf import settings
 from django.core.files import File
 import cv2
 import numpy as np
-from .models import PetVideos
+from .models import PetVideos, SingletonHomographicMatrixModel
 from .helper import merge_close_points, DEFAULT_HSV, TOL_S, TOL_H, TOL_V
 
 logger = logging.getLogger('homography_app')
@@ -45,7 +45,13 @@ def process_video_task(petvideo_id):
 
             # HSV detection
             hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            h, s, v = DEFAULT_HSV
+            singleton = SingletonHomographicMatrixModel.load()
+            if singleton.hsv_value:  # will be {} if not set
+                h = singleton.hsv_value.get('h', DEFAULT_HSV[0])
+                s = singleton.hsv_value.get('s', DEFAULT_HSV[1])
+                v = singleton.hsv_value.get('v', DEFAULT_HSV[2])
+            else:
+                h, s, v = DEFAULT_HSV
             lower = np.array([max(h - TOL_H, 0), max(s - TOL_S, 0), max(v - TOL_V, 0)])
             upper = np.array([min(h + TOL_H, 179), min(s + TOL_S, 255), min(v + TOL_V, 255)])
             mask = cv2.inRange(hsv_frame, lower, upper)
