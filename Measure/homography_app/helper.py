@@ -4,6 +4,78 @@ import cv2
 DEFAULT_HSV = np.array([26, 116, 152], dtype=np.uint8)
 TOL_H, TOL_S, TOL_V = 10, 50, 80
 
+from scipy import interpolate, signal
+
+def filter_and_smooth(coords, window_size=5, threshold=5):
+    coords = np.array(coords, dtype=np.float64)
+    N = len(coords)
+
+    # Step 1: Robust outlier detection using rolling median
+    coords_filtered = coords.copy()
+    for i in range(N):
+        # Define local window boundaries
+        start = max(0, i - window_size)
+        end = min(N, i + window_size + 1)
+
+        local_median = np.median(coords[start:end], axis=0)
+        distance = np.linalg.norm(coords[i] - local_median)
+
+        if distance > threshold:
+            coords_filtered[i] = np.array([np.nan, np.nan])
+
+    # Step 2: Interpolation over NaN points
+    valid_mask = ~np.isnan(coords_filtered[:, 0])
+    x_valid = np.where(valid_mask)[0]
+    y_valid = coords_filtered[valid_mask]
+
+    if len(x_valid) < 4:
+        kind = 'linear'
+    else:
+        kind = 'cubic'
+
+    interp_func_x = interpolate.interp1d(x_valid, y_valid[:, 0], kind=kind, fill_value="extrapolate")
+    interp_func_y = interpolate.interp1d(x_valid, y_valid[:, 1], kind=kind, fill_value="extrapolate")
+
+    x_all = np.arange(N)
+    coords_interpolated = np.vstack((interp_func_x(x_all), interp_func_y(x_all))).T
+
+    # Step 3: Smoothing with Savitzky-Golay filter
+    smoothed_x = signal.savgol_filter(coords_interpolated[:, 0], window_length=7, polyorder=2, mode='nearest')
+    smoothed_y = signal.savgol_filter(coords_interpolated[:, 1], window_length=7, polyorder=2, mode='nearest')
+
+    smoothed_coords = np.vstack((smoothed_x, smoothed_y)).T
+
+    return smoothed_coords
+
+def shadow_removal(img):
+    rgb_planes = cv2.split(img)
+
+    result_planes = []
+    result_norm_planes = []
+    for plane in rgb_planes:
+        dilated_img = cv2.dilate(plane, np.ones((7, 7), np.uint8))
+        bg_img = cv2.medianBlur(dilated_img, 21)
+        diff_img = 255 - cv2.absdiff(plane, bg_img)
+        norm_img = cv2.normalize(diff_img, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)
+        result_planes.append(diff_img)
+        result_norm_planes.append(norm_img)
+
+    result = cv2.merge(result_planes)
+    result_norm = cv2.merge(result_norm_planes)
+    return result_norm
+
+def equalize_image(img, clahe):
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+
+    # Apply CLAHE to L channel (enhances brightness, reduces shadows)
+    l_eq = clahe.apply(l)
+
+    # Merge back and convert to BGR
+    lab_eq = cv2.merge((l_eq, a, b))
+    enhanced_frame = cv2.cvtColor(lab_eq, cv2.COLOR_LAB2BGR)
+    return enhanced_frame
+
 def merge_close_points(points, threshold=10):
     merged = []
     points = points.copy()
@@ -22,7 +94,6 @@ def merge_close_points(points, threshold=10):
         points = remaining
     return merged
 
-import numpy as np
 import json
 
 def save_homography_as_json(H, path='homography_app/homography_data/homography.json'):

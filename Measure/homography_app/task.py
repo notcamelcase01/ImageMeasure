@@ -6,9 +6,10 @@ from django.core.files import File
 import cv2
 import numpy as np
 from .models import PetVideos, SingletonHomographicMatrixModel
-from .helper import merge_close_points, DEFAULT_HSV, TOL_S, TOL_H, TOL_V
+from .helper import filter_and_smooth, DEFAULT_HSV, TOL_S, TOL_H, TOL_V, equalize_image
 
 logger = logging.getLogger('homography_app')
+
 
 @background(schedule=0, remove_existing_tasks=True)
 def process_video_task(petvideo_id):
@@ -47,37 +48,53 @@ def process_video_task(petvideo_id):
             h, s, v = DEFAULT_HSV
 
         lower = np.array([max(h - TOL_H, 0), max(s - TOL_S, 0), max(v - TOL_V, 0)])
-        upper = np.array([min(h + TOL_H, 179), min(s + TOL_S, 255), min(v + TOL_V, 255)])
+        upper = np.array([min(h + TOL_H, 255), min(s + TOL_S, 255), min(v + TOL_V, 255)])
+
+        trajectory = []
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
+                # --- Image Enhancement Step ---
 
-            # HSV detection only
-            hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            hsv_frame = cv2.cvtColor(equalize_image(frame, clahe), cv2.COLOR_BGR2HSV)
+
             mask = cv2.inRange(hsv_frame, lower, upper)
             mask = cv2.medianBlur(mask, 5)
 
+            # Saturation filter (optional but recommended)
+            saturation_mask = hsv_frame[:, :, 1] > 64
+            mask = mask & saturation_mask
+
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            detected_points = []
+            detected_points = (0, 0)
+
             for cnt in contours:
-                if cv2.contourArea(cnt) > 10:
-                    M = cv2.moments(cnt)
-                    if M["m00"] != 0:
-                        cx = int(M["m10"] / M["m00"])
-                        cy = int(M["m01"] / M["m00"])
-                        detected_points.append((cx, cy))
+                M = cv2.moments(cnt)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    if detected_points[1] < cy:
+                        detected_points = (cx, cy)
 
-            detected_points = merge_close_points(detected_points, threshold=40)
+            trajectory.append(detected_points)
 
-            if detected_points:
-                # Select the point with the largest Y (lowest in image)
-                lowest_point = max(detected_points, key=lambda p: p[1])
-                cv2.circle(frame, lowest_point, 15, (0, 0, 255), -1)
+        cap.release()
 
-            out.write(frame)
-
+        cap = cv2.VideoCapture(video_path)
+        traj_cnt = 0
+        trajectory = filter_and_smooth(trajectory, threshold=10)
+        trajectory = [tuple(map(int, point)) for point in trajectory]
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            enhanced_frame = equalize_image(frame, clahe)
+            cv2.circle(enhanced_frame, trajectory[traj_cnt], 20, (0, 255, 0), 2)
+            traj_cnt += 1
+            out.write(enhanced_frame)
         cap.release()
         out.release()
 
