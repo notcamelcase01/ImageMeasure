@@ -68,14 +68,14 @@ def upload_calibration_video(request):
                 cy = M["m01"] / M["m00"]
                 points.append((cx, cy))
 
-        points = merge_close_points(points, threshold=40)  # Your custom logic
-
-        if len(points) != 4:
+        points = merge_close_points(points, threshold=10)  # Your custom logic
+        points_sorted = sorted(points, key=lambda p: p[1], reverse=True)
+        if len(points) < 4:
             return JsonResponse({
                 'status': 'error',
                 'message': f'Failed to detect exactly 4 points. Detected: {len(points)}'
             }, status=400)
-
+        points = points_sorted[:4]
         # Proceed to compute homography and save
         pts = np.array(points, dtype=np.float32)
         total_x = sum([pt[0] for pt in pts]) / 4.
@@ -157,11 +157,13 @@ def process_image(request):
         img_file = request.FILES['image']
         x = int(request.POST['x'])
         y = int(request.POST['y'])
-
+        print(x, y)
         file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         if img is None:
             return JsonResponse({'error': 'Invalid image'}, status=400)
+        print(img.shape)
+        cv2.imwrite("ths.jpg", img)
         hsv_frame = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         h, s, v = hsv_frame[y, x]
         h, s, v = int(h), int(s), int(v)
@@ -172,6 +174,7 @@ def process_image(request):
         output_img = img.copy()
         output_img[mask > 0] = highlight[mask > 0]
         cv2.circle(output_img, (x, y), 8, (25, 48, 228), -1)
+        cv2.imwrite("this.jpg", output_img)
         _, buffer = cv2.imencode('.jpg', output_img)
         encoded_image = base64.b64encode(buffer).decode('utf-8')
 

@@ -92,9 +92,9 @@ def process_video_task(petvideo_id):
             if not ret:
                 break
             enhanced_frame = equalize_image(frame, clahe)
-            cv2.circle(enhanced_frame, trajectory[traj_cnt], 20, (0, 255, 0), 2)
+            cv2.circle(frame, trajectory[traj_cnt], 20, (0, 255, 0), 2)
             traj_cnt += 1
-            out.write(enhanced_frame)
+            out.write(frame )
         cap.release()
         out.release()
 
