@@ -75,6 +75,8 @@ def upload_calibration_video(request):
                 'status': 'error',
                 'message': f'Failed to detect exactly 4 points. Detected: {len(points)}'
             }, status=400)
+        cv2.imwrite("tihis.jpg", frame)
+
         points = points_sorted[:4]
         # Proceed to compute homography and save
         pts = np.array(points, dtype=np.float32)
@@ -126,7 +128,6 @@ def upload_calibration_video(request):
                 (0, 255, 0),
                 1
             )
-
         _, buffer = cv2.imencode('.jpg', frame)
         if homography_obj.file:
             homography_obj.file.delete(save=False)

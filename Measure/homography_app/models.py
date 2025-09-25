@@ -27,7 +27,7 @@ class SingletonHomographicMatrixModel(models.Model):
     # homograph is in media/homograph
     matrix = models.FileField(upload_to='homograph/')
     file = models.FileField(upload_to="calibrated_images/")
-    unit_distance = models.IntegerField(default=60)
+    unit_distance = models.FloatField(default=60)
     hsv_value = models.JSONField(default=dict)
     class Meta:
         constraints = [
