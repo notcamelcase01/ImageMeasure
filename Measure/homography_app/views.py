@@ -182,6 +182,7 @@ def process_image(request):
         # ✅ Save HSV value in singleton model
         singleton = SingletonHomographicMatrixModel.load()
         singleton.hsv_value = {'h': int(h), 's': int(s), 'v': int(v)}
+        singleton.tracker_hsv_value = {'h': int(h), 's': int(s), 'v': int(v)}
         singleton.save()
 
         return JsonResponse({
