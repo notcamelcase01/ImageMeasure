@@ -2,9 +2,112 @@ import numpy as np
 import cv2
 
 DEFAULT_HSV = np.array([26, 116, 152], dtype=np.uint8)
-TOL_H, TOL_S, TOL_V = 10, 50, 80
+TOL_H, TOL_S, TOL_V = 10, 50, 100
 
 from scipy import interpolate, signal
+import matplotlib.pyplot as plt
+from scipy.signal import savgol_filter
+
+def distance_from_homography(pt1, pt2, H):
+    # Convert to proper shape for cv2.perspectiveTransform → (N, 1, 2)
+    pts = np.array([pt1, pt2], dtype=np.float32).reshape(-1, 1, 2)
+
+    # Transform both points using the homography
+    world_pts = cv2.perspectiveTransform(pts, H)
+
+    # Compute Euclidean distance in world coordinates
+    p1, p2 = world_pts[0, 0], world_pts[1, 0]
+    distance = np.linalg.norm(p1 - p2)
+
+    return float(distance)
+
+def detect_biggest_jump(y, smooth_window=11, smooth_poly=2, start_thresh=-1.5, end_thresh=0):
+    y_smooth = savgol_filter(y, window_length=smooth_window, polyorder=smooth_poly)
+    dy = np.gradient(y_smooth)
+
+    n_base = max(1, len(y_smooth) // 10)
+    baseline = np.median(y_smooth[-n_base:])
+
+    jump_start_idx = np.where(dy < start_thresh)[0]
+    jump_end_idx = np.where((dy > end_thresh) & (y_smooth > baseline))[0]
+
+    start, end = None, None
+    max_jump_height = 0
+
+    for s in jump_start_idx:
+        e_candidates = jump_end_idx[jump_end_idx > s]
+        if len(e_candidates) == 0:
+            continue
+        for e in e_candidates:
+            jump_height = np.max(y_smooth[s:e + 1]) - np.min(y_smooth[s:e + 1])
+            if jump_height > max_jump_height:
+                max_jump_height = jump_height
+                start, end = s, e
+
+    return start, end
+
+
+def detect_jump_parabola(frames, pixel_y, filename="jump_parabola.png"):
+    y_smooth = savgol_filter(pixel_y, window_length=9, polyorder=2)
+
+    apex_idx = np.argmin(y_smooth)
+
+    start_idx, end_idx = apex_idx, apex_idx
+    while start_idx > 0 and y_smooth[start_idx] <= y_smooth[start_idx - 1]:
+        start_idx -= 1
+    while end_idx < len(y_smooth) - 1 and y_smooth[end_idx] <= y_smooth[end_idx + 1]:
+        end_idx += 1
+
+    jump_frames = frames[start_idx:end_idx + 1]
+    jump_y = pixel_y[start_idx:end_idx + 1]
+
+    coeffs = np.polyfit(jump_frames, jump_y, 2)
+    poly = np.poly1d(coeffs)
+
+    fit_x = np.linspace(jump_frames[0], jump_frames[-1], 300)
+    fit_y = poly(fit_x)
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(frames, pixel_y, 'bo-', label='Original Y')
+    plt.plot(frames, y_smooth, 'g--', label='Smoothed Y')
+    plt.plot(jump_frames, jump_y, 'ro', label='Detected Jump Region')
+    plt.plot(fit_x, fit_y, 'k-', label='Fitted Parabola')
+    plt.xlabel('Frame')
+    plt.ylabel('Pixel Y')
+    plt.title('Jump Detection and Parabola Fit')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(filename)
+    plt.close()
+
+    # Optional: Return info about the jump
+    return {
+        'start_frame': jump_frames[0],
+        'end_frame': jump_frames[-1],
+        'apex_frame': frames[apex_idx],
+        'coefficients': coeffs
+    }
+
+def save_frame_vs_pixel_graph(pixel_y, filename="frame_vs_pixel_y.png"):
+    plt.figure(figsize=(10, 6))
+    frames = [i for i in range(len(pixel_y))]
+    plt.plot(frames, pixel_y, label='Pixel Y Position', color='b')
+    plt.xlabel('Frame Number')
+    plt.ylabel('Pixel Y Position')
+    plt.title('Frame vs Pixel Y Position')
+    plt.grid(True)
+    plt.legend()
+
+    # Save the graph to a file
+    plt.savefig(filename)
+    plt.close()  # Close the plot to avoid display
+
+
+# Function: world → image projection using cv2.perspectiveTransform
+def world_to_image(points, H):
+    pts = np.array(points, dtype=np.float32).reshape(-1, 1, 2)  # (N,1,2)
+    projected = cv2.perspectiveTransform(pts, H)
+    return projected.reshape(-1, 2).astype(int)
 
 def filter_and_smooth(coords, window_size=5, threshold=5):
     coords = np.array(coords, dtype=np.float64)
