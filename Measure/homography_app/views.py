@@ -6,7 +6,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.core.files.base import ContentFile
 import cv2
 import numpy as np
-from .helper import merge_close_points, DEFAULT_HSV, TOL_S, TOL_H, TOL_V
+from .helper import merge_close_points, DEFAULT_HSV, TOL_S, TOL_H, TOL_V, order_points_anticlockwise
 from .models import PetVideos, SingletonHomographicMatrixModel
 from .task import process_video_task
 from django.conf import settings
@@ -39,11 +39,44 @@ def upload_video(request):
 
 @csrf_exempt
 def upload_calibration_video(request):
-    if request.method == 'POST' and request.FILES.get('image'):
-        image_file = request.FILES['image']
-        unit_distance = float(request.POST.get('square_size', 60))  # Default to 60 if not provided
-        np_img = np.frombuffer(image_file.read(), np.uint8)
-        frame = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
+    if request.method == 'POST' and request.FILES.get('video'):
+        video_file = request.FILES['video']
+        unit_distance = float(request.POST.get('square_size', 0.984252))
+
+        file_bytes = np.asarray(bytearray(video_file.read()), dtype=np.uint8)
+        cap = cv2.VideoCapture(cv2.CAP_FFMPEG)
+        cap.open(cv2.imdecode(file_bytes, cv2.IMREAD_COLOR))
+
+        if not cap.isOpened():
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix='.mp4') as temp:
+                temp.write(file_bytes)
+                temp.flush()
+                cap = cv2.VideoCapture(temp.name)
+                if not cap.isOpened():
+                    return JsonResponse({
+                        'status': 'error',
+                        'message': 'Failed to read uploaded video'
+                    }, status=400)
+
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                middle_frame_index = total_frames // 2
+                cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_index)
+                ret, frame = cap.read()
+                cap.release()
+
+        else:
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            middle_frame_index = total_frames // 2
+            cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_index)
+            ret, frame = cap.read()
+            cap.release()
+
+        if not ret or frame is None:
+            return JsonResponse({
+                'status': 'error',
+                'message': 'Could not extract frame from video'
+            }, status=400)
 
         # HSV mask logic (assume DEFAULT_HSV, TOL_H, TOL_S, TOL_V are defined)
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -76,31 +109,41 @@ def upload_calibration_video(request):
                 'message': f'Failed to detect exactly 4 points. Detected: {len(points)}'
             }, status=400)
         cv2.imwrite("tihis.jpg", frame)
-
-        points = points_sorted[:4]
+        if len(points) < 6:
+            points = points_sorted[:4]
+            world_pts = np.array([
+                [0, 0],
+                [unit_distance, 0],
+                [unit_distance, unit_distance],
+                [0, unit_distance]
+            ], dtype=np.float32)
+        else:
+            points = points_sorted[:6]
+            world_pts = np.array([
+                [0, 0],
+                [unit_distance, 0],
+                [unit_distance + unit_distance, 0],
+                [unit_distance + unit_distance, unit_distance],
+                [unit_distance, unit_distance],
+                [0, unit_distance]
+            ], dtype=np.float32)
         # Proceed to compute homography and save
-        pts = np.array(points, dtype=np.float32)
-        total_x = sum([pt[0] for pt in pts]) / 4.
-        total_y = sum([pt[1] for pt in pts]) / 4.
-        pts = pts - np.array([total_x, total_y])
-        order_points = np.zeros((4, 2))
-        for pt in pts:
-            if pt[0] <= 0 and pt[1] <= 0:
-                order_points[3] = pt
-            elif pt[0] > 0 > pt[1]:
-                order_points[2] = pt
-            elif pt[0] > 0 and pt[1] > 0:
-                order_points[1] = pt
-            else:
-                order_points[0] = pt
-        order_points += np.array([total_x, total_y])
-
-        world_pts = np.array([
-            [0, 0],
-            [unit_distance, 0],
-            [unit_distance, unit_distance],
-            [0, unit_distance]
-        ], dtype=np.float32)
+        # pts = np.array(points, dtype=np.float32)
+        # total_x = sum([pt[0] for pt in pts]) / 4.
+        # total_y = sum([pt[1] for pt in pts]) / 4.
+        # pts = pts - np.array([total_x, total_y])
+        # order_points = np.zeros((4, 2))
+        # for pt in pts:
+        #     if pt[0] <= 0 and pt[1] <= 0:
+        #         order_points[3] = pt
+        #     elif pt[0] > 0 > pt[1]:
+        #         order_points[2] = pt
+        #     elif pt[0] > 0 and pt[1] > 0:
+        #         order_points[1] = pt
+        #     else:
+        #         order_points[0] = pt
+        # order_points += np.array([total_x, total_y])
+        order_points = np.array(order_points_anticlockwise(points))
 
         H, _ = cv2.findHomography(order_points, world_pts)
         homography_matrix = H.tolist()
@@ -125,7 +168,7 @@ def upload_calibration_video(request):
                 (int(x) + 5, int(y) - 5),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
-                (0, 255, 0),
+                (233, 0, 2),
                 1
             )
         _, buffer = cv2.imencode('.jpg', frame)
@@ -198,7 +241,7 @@ def process_image(request):
 def list_videos(request):
     videos = PetVideos.objects.all().order_by('-uploaded_at')
     data = [{'name': v.name, 'file': v.file.url, 'distance': v.distance,
-             'participant_name': v.participant_name, "pet_type": v.pet_type, 'id': v.id, 'is_processed': v.is_video_processed} for v
+             'participant_name': v.participant_name, "pet_type": v.pet_type, 'id': v.id, 'is_processed': v.is_video_processed, "progress": v.progress} for v
             in videos]
     return JsonResponse({'videos': data})
 

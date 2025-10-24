@@ -1,12 +1,328 @@
 import numpy as np
-import cv2
 
-DEFAULT_HSV = np.array([26, 116, 152], dtype=np.uint8)
-TOL_H, TOL_S, TOL_V = 10, 50, 100
+
+DEFAULT_HSV = np.array([172, 180, 180], dtype=np.uint8)
+TOL_H, TOL_S, TOL_V = 20, 50, 50
 
 from scipy import interpolate, signal
 import matplotlib.pyplot as plt
-from scipy.signal import savgol_filter
+from scipy.signal import savgol_filter, find_peaks
+
+import math
+
+# # 7 basic colors (BGR)
+# basic_bgr = np.uint8([
+#     [0,   0, 255],   # red
+#     [0,  69, 255],   # orange
+#     [0, 255, 255],   # yellow
+#     [0, 255,   0],   # green
+#     [255, 0,   0],   # blue
+#     [130, 0,  75],   # indigo
+#     [238, 130, 238]  # violet
+# ])
+# basic_hsv = cv2.cvtColor(basic_bgr.reshape(1, -1, 3), cv2.COLOR_BGR2HSV).reshape(-1, 3)
+#
+# YELLOW_IDX = 0
+# GREEN_IDX = 3
+
+
+def clamp_box(x1, y1, x2, y2, w, h):
+    x1 = max(0, min(w - 1, int(x1)))
+    x2 = max(0, min(w - 1, int(x2)))
+    y1 = max(0, min(h - 1, int(y1)))
+    y2 = max(0, min(h - 1, int(y2)))
+    return x1, y1, x2, y2
+
+
+
+def get_ankle_mask(frame, clahe=None):
+    h, w = frame.shape[:2]
+    half_h = h // 2
+    # target lower half cuz legs are in lower half
+    lower_half = frame[half_h:h, :]
+
+    #  basic BGR colors
+    basic_bgr = np.uint8([
+        [0, 0, 255],    # red
+        [0, 69, 255],   # orange
+        [0, 255, 255],  # yellow
+        [0, 255, 0],    # green
+        [255, 0, 0],    # blue
+        [130, 0, 75],   # indigo
+        [238, 130, 238],# violet
+    ])
+
+    basic_lab = cv2.cvtColor(basic_bgr.reshape(1, -1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3)
+    YELLOW_IDX = 2  # index for yellow in the array
+
+    # Convert frame to LAB
+    lab = cv2.cvtColor(lower_half, cv2.COLOR_BGR2LAB)
+    L, A, B = cv2.split(lab)
+
+    # Optional illumination correction
+    if clahe is not None:
+        L = clahe.apply(L)
+        lab = cv2.merge((L, A, B))
+
+    # Use only chroma channels (a,b)
+    hh, ww = L.shape
+    ab = lab[:, :, 1:3].reshape((-1, 2)).astype(np.int16)
+    basic_ab = basic_lab[:, 1:3].astype(np.int16)
+
+    # Compute squared distances between each pixel and the 7 base colors
+    dists = np.sum((ab[:, None, :] - basic_ab[None, :, :]) ** 2, axis=2)
+    labels = np.argmin(dists, axis=1).astype(np.uint8).reshape(hh, ww)
+
+    # Build yellow mask
+    mask_yellow = (labels == YELLOW_IDX).astype(np.uint8) * 255
+
+    # Clean up
+    mask_yellow = cv2.medianBlur(mask_yellow, 5)
+    mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+
+    # Create full-size mask with zeros on top half
+    full_mask = np.zeros((h, w), dtype=np.uint8)
+    full_mask[half_h:h, :] = mask_yellow
+
+    return full_mask
+
+
+
+
+def ankle_crop_color_detection(frame, CLAHE=None, model=None, CROP_HALF=32):
+    h, w = frame.shape[:2]
+
+    # Run YOLO pose detection
+    results = model.predict(frame, conf=0.25, verbose=False)
+    ankle_keypoints = []
+
+    for r in results:
+        if hasattr(r, 'keypoints') and r.keypoints is not None:
+            kps = r.keypoints.xy  # (num_people, num_kpts, 2)
+            for person_kps in kps:
+                for idx in [15, 16]:  # 16  = right ankkll
+                    if idx < len(person_kps):
+                        x_px, y_px = person_kps[idx]
+                        ankle_keypoints.append((int(x_px), int(y_px)))
+
+    mask_full = np.zeros((h, w), dtype=np.uint8)
+
+    for ax, ay in ankle_keypoints:
+        x1 = ax - CROP_HALF
+        y1 = ay - CROP_HALF
+        x2 = ax + CROP_HALF
+        y2 = ay + CROP_HALF
+        x1, y1, x2, y2 = clamp_box(x1, y1, x2, y2, w, h)
+
+        # Crop around ankle
+        crop = frame[y1:y2, x1:x2]
+
+        yellow_mask = get_ankle_mask(crop, clahe=CLAHE)
+
+        mask_full[y1:y2, x1:x2] = cv2.bitwise_or(mask_full[y1:y2, x1:x2], yellow_mask)
+
+
+    return mask_full
+
+
+
+
+def detect_yellow_mask_lab(frame, clahe=None):
+    # Get image dimensions
+    h, w = frame.shape[:2]
+    half_h = h // 2
+
+    # Work only on the lower half
+    lower_half = frame[half_h:h, :]
+
+    # Define 7 basic BGR colors
+    basic_bgr = np.uint8([
+        [0, 0, 255],    # red
+        [0, 69, 255],   # orange
+        [0, 255, 255],  # yellow
+        [0, 255, 0],    # green
+        [255, 0, 0],    # blue
+        [130, 0, 75],   # indigo
+        [238, 130, 238],# violet
+        [0, 220, 0]  # dg
+
+    ])
+
+    basic_lab = cv2.cvtColor(basic_bgr.reshape(1, -1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3)
+    YELLOW_IDX = 2  # index for yellow in the array
+
+    # Convert frame to LAB
+    lab = cv2.cvtColor(lower_half, cv2.COLOR_BGR2LAB)
+    L, A, B = cv2.split(lab)
+
+    # Optional illumination correction
+    if clahe is not None:
+        L = clahe.apply(L)
+        lab = cv2.merge((L, A, B))
+
+    # Use only chroma channels (a,b)
+    hh, ww = L.shape
+    ab = lab[:, :, 1:3].reshape((-1, 2)).astype(np.int16)
+    basic_ab = basic_lab[:, 1:3].astype(np.int16)
+
+    # Compute squared distances between each pixel and the 7 base colors
+    dists = np.sum((ab[:, None, :] - basic_ab[None, :, :]) ** 2, axis=2)
+    labels = np.argmin(dists, axis=1).astype(np.uint8).reshape(hh, ww)
+
+    # Build yellow mask
+    mask_yellow = (labels == YELLOW_IDX).astype(np.uint8) * 255
+
+    # Clean up
+    mask_yellow = cv2.medianBlur(mask_yellow, 5)
+    mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+
+    # Create full-size mask with zeros on top half
+    full_mask = np.zeros((h, w), dtype=np.uint8)
+    full_mask[half_h:h, :] = mask_yellow
+
+    return full_mask
+
+
+# def detect_bright_yellow_mask(frame_bgr, margin=20, bright_thresh=150):
+#     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+#     H, S, V = cv2.split(hsv)
+#     h_flat = H.reshape(-1).astype(np.int16)
+#     s_flat = S.reshape(-1).astype(np.int16)
+#     v_flat = V.reshape(-1)
+#
+#     hsv_pixels = np.stack([h_flat, s_flat], axis=1)
+#     basic_hsv_as = basic_hsv[:, :2].astype(np.int16)
+#     dists = np.sum((hsv_pixels[:, None, :] - basic_hsv_as[None, :, :]) ** 2, axis=2)
+#
+#     nearest_idx = np.argmin(dists, axis=1)
+#     mask_yellow = (nearest_idx == YELLOW_IDX)
+#
+#     dist_yellow = dists[:, YELLOW_IDX]
+#     dist_green = dists[:, GREEN_IDX]
+#     mask_yellow = mask_yellow & ((dist_green - dist_yellow) > margin)
+#     mask_yellow = mask_yellow & (v_flat > bright_thresh)
+#
+#     mask_yellow = mask_yellow.reshape(H.shape).astype(np.uint8) * 255
+#     mask_yellow = cv2.medianBlur(mask_yellow, 5)
+#     mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
+#     mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_CLOSE, np.ones((5,5), np.uint8))
+#
+#     return mask_yellow, nearest_idx.reshape(H.shape)
+
+def simplify_to_primary_colors(frame):
+
+    # Increase contrast slightly
+    frame = cv2.convertScaleAbs(frame, alpha=1.5, beta=0)
+
+    # Define target colors (BGR)
+    palette = np.array([
+        [255,   0,   0],   # Blue
+        [0,     0, 255],   # Red
+        [0,   255,   0],   # Green
+        [0,   255, 255],   # Yellow
+        [255, 255, 255],   # White
+        [0,     0,   0],   # Black
+    ], dtype=np.uint8)
+
+    # Reshape frame to (num_pixels, 3)
+    pixels = frame.reshape((-1, 3)).astype(np.float32)
+
+    # Compute distance to each palette color
+    distances = np.linalg.norm(pixels[:, None, :] - palette[None, :, :], axis=2)
+
+    # Find nearest palette color index
+    nearest_idx = np.argmin(distances, axis=1)
+
+    # Map each pixel to nearest palette color
+    simplified = palette[nearest_idx].reshape(frame.shape).astype(np.uint8)
+
+    return simplified
+
+
+def detect_sine_cycle_in_window(x, smooth=True, window_len=11, min_prominence=0.2):
+
+    x = np.asarray(x)
+    n = len(x)
+
+    # Smooth lightly
+    if smooth:
+        win = min(window_len, n - (n + 1) % 2)
+        x = savgol_filter(x, win, polyorder=3)
+
+    # Detect significant peaks
+    peaks, _ = find_peaks(x, prominence=min_prominence)
+    troughs, _ = find_peaks(-x, prominence=min_prominence)
+
+    # Combine and sort
+    events = np.sort(np.concatenate([peaks, troughs]))
+
+    # Look for full cycle: peak-trough-peak or trough-peak-trough
+    for i in range(len(events) - 2):
+        a, b, c = events[i:i + 3]
+        if (a in peaks and b in troughs and c in peaks) or (a in troughs and b in peaks and c in troughs):
+            return a, c  # start, end of one cycle
+
+    return None
+
+def merge_close_regions(regions, max_gap=2):
+    if not regions:
+        return []
+
+    # Sort regions by start index
+    regions = sorted(regions, key=lambda x: x[0])
+    merged = [regions[0]]
+
+    for start, end in regions[1:]:
+        last_start, last_end = merged[-1]
+        if start - last_end <= max_gap:
+            # Merge if gap <= max_gap
+            merged[-1] = (last_start, end)
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def get_flat_start(y, window=30, tol=10):
+
+    flat_regions = []
+    i = 0
+    while i <= len(y) - window:
+        segment = y[i:i+window]
+        if np.max(segment) - np.min(segment) < tol:  # small variation => flat
+            flat_regions.append((i, i + window))
+            i += window  # skip to avoid overlapping regions
+        else:
+            i += 1
+    flat_regions = merge_close_regions(flat_regions)
+    if len(flat_regions) < 2:
+        return False, [[0, 1], [0, 1]]
+    else:
+        mid = len(flat_regions) // 2
+        return True, [flat_regions[mid-1], flat_regions[mid]]
+
+def order_points_anticlockwise(points):
+    if len(points) < 3:
+        raise ValueError("Need at least 3 points to order anticlockwise.")
+
+    max_y = max(p[1] for p in points)
+    candidates = [p for p in points if abs(p[1] - max_y) < 10]
+    start = min(candidates, key=lambda p: p[0])
+    cx = sum(p[0] for p in points) / len(points)
+    cy = sum(p[1] for p in points) / len(points)
+
+    def angle(p):
+        return math.atan2(p[1] - cy, p[0] - cx)
+
+    sorted_points = sorted(points, key=angle, reverse=True)
+
+    if start in sorted_points:
+        i = sorted_points.index(start)
+        sorted_points = sorted_points[i:] + sorted_points[:i]
+
+    return sorted_points
+
 
 def distance_from_homography(pt1, pt2, H):
     # Convert to proper shape for cv2.perspectiveTransform → (N, 1, 2)
@@ -24,27 +340,33 @@ def distance_from_homography(pt1, pt2, H):
 def detect_biggest_jump(y, smooth_window=11, smooth_poly=2, start_thresh=-1.5, end_thresh=0):
     y_smooth = savgol_filter(y, window_length=smooth_window, polyorder=smooth_poly)
     dy = np.gradient(y_smooth)
+    dy[np.logical_and(dy > -10, dy < 10)] = 0
+    start , end = 0 , len(dy)
+    while start < len(dy) and dy[start] == 0:
+        start += 1
 
-    n_base = max(1, len(y_smooth) // 10)
-    baseline = np.median(y_smooth[-n_base:])
+    while end > start and dy[end - 1] == 0:
+        end -= 1
+    # n_base = max(1, len(y_smooth) // 10)
+    # baseline = np.median(y_smooth[-n_base:])
+    #
+    # jump_start_idx = np.where(dy < start_thresh)[0]
+    # jump_end_idx = np.where((dy > end_thresh) & (y_smooth > baseline))[0]
+    #
+    # start, end = None, None
+    # max_jump_height = 0
+    #
+    # for s in jump_start_idx:
+    #     e_candidates = jump_end_idx[jump_end_idx > s]
+    #     if len(e_candidates) == 0:
+    #         continue
+    #     for e in e_candidates:
+    #         jump_height = np.max(y_smooth[s:e + 1]) - np.min(y_smooth[s:e + 1])
+    #         if jump_height > max_jump_height:
+    #             max_jump_height = jump_height
+    #             start, end = s, e
 
-    jump_start_idx = np.where(dy < start_thresh)[0]
-    jump_end_idx = np.where((dy > end_thresh) & (y_smooth > baseline))[0]
-
-    start, end = None, None
-    max_jump_height = 0
-
-    for s in jump_start_idx:
-        e_candidates = jump_end_idx[jump_end_idx > s]
-        if len(e_candidates) == 0:
-            continue
-        for e in e_candidates:
-            jump_height = np.max(y_smooth[s:e + 1]) - np.min(y_smooth[s:e + 1])
-            if jump_height > max_jump_height:
-                max_jump_height = jump_height
-                start, end = s, e
-
-    return start, end
+    return start - 3, end + 3
 
 
 def detect_jump_parabola(frames, pixel_y, filename="jump_parabola.png"):
@@ -101,6 +423,36 @@ def save_frame_vs_pixel_graph(pixel_y, filename="frame_vs_pixel_y.png"):
     # Save the graph to a file
     plt.savefig(filename)
     plt.close()  # Close the plot to avoid display
+
+
+import cv2
+import numpy as np
+
+def simplify_with_yellow_focus(frame):
+
+    frame = cv2.convertScaleAbs(frame, alpha=1.5, beta=0)
+
+    palette = np.array([
+        [255,   0,   0],   # Blue
+        [0,     0, 255],   # Red
+        [0,   255,   0],   # Green
+        [0,   255, 255],   # Yellow
+        [255, 255, 255],   # White
+        [0,     0,   0],   # Black
+        [0,   165, 255],   # Orange (helps separate reddish-yellow tones)
+    ], dtype=np.uint8)
+
+    pixels = frame.reshape((-1, 3)).astype(np.float32)
+    distances = np.linalg.norm(pixels[:, None, :] - palette[None, :, :], axis=2)
+    nearest_idx = np.argmin(distances, axis=1)
+    simplified = palette[nearest_idx].reshape(frame.shape).astype(np.uint8)
+
+    # Step 4: Create yellow mask
+    yellow_color = np.array([0, 255, 255], dtype=np.uint8)
+    yellow_mask = cv2.inRange(simplified, yellow_color, yellow_color)
+
+    return simplified, yellow_mask
+
 
 
 # Function: world → image projection using cv2.perspectiveTransform
@@ -166,6 +518,49 @@ def shadow_removal(img):
     result = cv2.merge(result_planes)
     result_norm = cv2.merge(result_norm_planes)
     return result_norm
+
+def break_into_primary_colors(frame):
+    """
+    Accepts a cv2 frame (BGR format) and returns three images:
+    one each for Blue, Green, and Red primary channels.
+    """
+    # Split into B, G, R channels
+    b, g, r = cv2.split(frame)
+
+    # Create empty image with same shape
+    zeros = np.zeros_like(b)
+
+    # Merge each primary color
+    blue_img = cv2.merge([b, zeros, zeros])
+    green_img = cv2.merge([zeros, g, zeros])
+    red_img = cv2.merge([zeros, zeros, r])
+
+    return blue_img, green_img, red_img
+
+def preprocess_for_yellow_detection(img, clahe):
+    # Convert to LAB to normalize brightness
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+
+    # Apply CLAHE on L channel to reduce shadows
+    l_eq = clahe.apply(l)
+
+    # Merge and convert back to BGR
+    lab_eq = cv2.merge((l_eq, a, b))
+    bgr_eq = cv2.cvtColor(lab_eq, cv2.COLOR_LAB2BGR)
+
+    # Slightly boost saturation to make colors (like yellow) more vivid
+    hsv = cv2.cvtColor(bgr_eq, cv2.COLOR_BGR2HSV).astype(np.float32)
+    h, s, v = cv2.split(hsv)
+
+    # Increase saturation, but clip to valid range
+    s = np.clip(s * 1.25, 0, 255)
+    v = np.clip(v * 1.05, 0, 255)  # small brightness boost
+
+    hsv_enhanced = cv2.merge((h, s, v)).astype(np.uint8)
+    vibrant_bgr = cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
+
+    return vibrant_bgr
 
 def equalize_image(img, clahe):
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
