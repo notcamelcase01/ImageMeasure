@@ -115,8 +115,8 @@ def process_video_task(petvideo_id):
             start, end = 0, len(trajectory) - 1
         pt1 = trajectory[start if start else 0, :]
         pt2 = trajectory[end if end else len(trajectory) - 1, :]
-        pt1[-1] += 3
-        pt2[-1] += 3 #offset correction
+        pt1[-1] += 10
+        pt2[-1] += 10 #offset correction
         print(pt1, pt2)
         trajectory = [tuple(map(int, point)) for point in trajectory]
         #sorted_points = sorted(trajectory, key=lambda p: p[1], reverse=True)
