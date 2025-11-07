@@ -7,9 +7,9 @@ import cv2
 import json
 import numpy as np
 from .models import PetVideos, SingletonHomographicMatrixModel
-from .helper import filter_and_smooth, DEFAULT_HSV, TOL_S, TOL_H, TOL_V, equalize_image, detect_biggest_jump, \
-    distance_from_homography, get_flat_start, detect_sine_cycle_in_window, detect_yellow_mask_lab, \
-    ankle_crop_color_detection
+from .helper import filter_and_smooth, detect_biggest_jump, \
+    distance_from_homography, get_flat_start, \
+    ankle_crop_color_detection, correct_white_balance
 import glob
 from scipy.signal import savgol_filter
 from ultralytics import YOLO
@@ -27,10 +27,16 @@ def process_video_task(petvideo_id):
     except PetVideos.DoesNotExist:
         logger.error(f"[process_video_task] PetVideo ID {petvideo_id} does not exist")
         return
-
+    if not video_obj.to_be_processed:
+        with open(video_obj.file.path, 'rb') as f:
+            video_obj.processed_file.save(os.path.basename(video_obj.file.name), File(f), save=True)
+        logger.info(f"[process_video_task] Video requires no processing time recorded: {petvideo_id}")
+        return
     video_path = video_obj.file.path
     original_name = os.path.basename(video_obj.file.name)
-
+    if video_obj.processed_file:
+        video_obj.processed_file.delete(save=False)
+        video_obj.processed_file = None
     output_dir = os.path.join(settings.MEDIA_ROOT, 'post_processed_video')
     os.makedirs(output_dir, exist_ok=True)
 
@@ -43,6 +49,7 @@ def process_video_task(petvideo_id):
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         out = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
+        #temp = cv2.VideoWriter("this.mp4", fourcc, fps, (width, height))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         trajectory = []
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -53,28 +60,37 @@ def process_video_task(petvideo_id):
             ret, frame = cap.read()
             if not ret:
                 break
+            frame = correct_white_balance(frame)
+            frame = cv2.resize(frame, (1280, 720))
+            mask, ankle_points = ankle_crop_color_detection(frame, CLAHE=clahe, model=model)
+            mask_color = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
 
-            mask = ankle_crop_color_detection(frame, CLAHE=clahe, model=model)
-
-            # (keep your existing tracking logic the same)
+            #temp.write(mask_color)
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            detected_points = (0, 0)
+
+            detected_points = [0, 0] if len(ankle_points) < 2 else list(ankle_points[-1])
+            offset = 5 #pixel
+            detected_points[-1] = offset + detected_points[-1]
             for cnt in contours:
                 if cnt is None or len(cnt) == 0:
                     continue
+
                 M = cv2.moments(cnt)
                 if M["m00"] != 0:
                     cx = int(M["m10"] / M["m00"])
                     cy = int(M["m01"] / M["m00"])
-                    if detected_points[1] < cy or cy < height // 2:
-                        detected_points = (cx, cy)
+
+                    if detected_points[1] < cy or cy < 720 // 2:
+                        detected_points = [cx, cy]
+
+            # cv2.drawContours(frame, [largest_contour], -1, (0, 255, 0), 2)
 
             trajectory.append(detected_points)
             current_frame += 1
             if total_frames > 0:
                 progress = int((current_frame / total_frames) * 100)
                 if progress >= last_logged_progress + 10:
-                    video_obj.  progress = progress
+                    video_obj.progress = progress
                     video_obj.save(update_fields=["progress"])
                     last_logged_progress = progress
 
@@ -86,20 +102,21 @@ def process_video_task(petvideo_id):
         np.save("trajectory.npy", trajectory)
         y_smooth = savgol_filter(trajectory[:, 1], window_length=11, polyorder=2)
         dy = np.gradient(y_smooth)
-        dy[np.logical_and(dy > -10, dy < 10)] = 0
-        success, [f1, f2] = get_flat_start(dy)
+        limit_cut = max(dy) / 10
+        dy[np.logical_and(dy > -limit_cut, dy < limit_cut)] = 0
+        success, [f1, f2] = get_flat_start(dy, window=len(dy) // 5)
         print(f1, f2)
         if not success:
             logger.info(f"[process_video_task] Info processing PetVideo ID {petvideo_id}: flats not deteced")
-        data = trajectory[f1[1]: f2[1],:] if success else trajectory
-        start, end = detect_biggest_jump(data[:, 1])
+        start, end = detect_biggest_jump(dy[f1[1]: f2[1]] if success else dy)
         if success and start and end:
             end, start = end + f1[1], start + f1[1]
         else:
             start, end = 0, len(trajectory) - 1
         pt1 = trajectory[start if start else 0, :]
         pt2 = trajectory[end if end else len(trajectory) - 1, :]
-        pt2[1] = pt1[1]
+        pt1[-1] += 3
+        pt2[-1] += 3 #offset correction
         print(pt1, pt2)
         trajectory = [tuple(map(int, point)) for point in trajectory]
         #sorted_points = sorted(trajectory, key=lambda p: p[1], reverse=True)
@@ -117,6 +134,7 @@ def process_video_task(petvideo_id):
             H = np.array(json.load(f), dtype=np.float32)
         print(H)
         distance_ft = round(distance_from_homography(pt1, pt2, H), 2)
+        pt2[1] = pt1[1]
         img_line = np.array([[trajectory[start], trajectory[end]]], dtype=np.float32)
         world_line = cv2.perspectiveTransform(img_line, H)[0]
         p1, p2 = world_line
@@ -132,6 +150,8 @@ def process_video_task(petvideo_id):
             ret, frame = cap.read()
             if not ret:
                 break
+            frame = correct_white_balance(frame)
+            frame = cv2.resize(frame, (1280, 720))
             if start <= traj_cnt <= end:
                 overlay = frame.copy()
                 overlay[:] = (0, 0, 160)  # BGR red
@@ -146,11 +166,11 @@ def process_video_task(petvideo_id):
                     cv2.circle(frame, (x, y), 4, (0, 255, 0), -1)
                     cv2.putText(frame, f"{i}ft", (x + 6, y - 6),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
-
+            frame = cv2.resize(frame, (width, height))
             out.write(frame )
         cap.release()
         out.release()
-
+        #temp.release()
         # --- ffmpeg encode ---
         import subprocess
         subprocess.run([
@@ -160,15 +180,14 @@ def process_video_task(petvideo_id):
             final_output_path
         ], check=True)
 
-        # Save processed video to model
         with open(final_output_path, 'rb') as f:
             video_obj.processed_file.save(f"processed_{original_name}", File(f), save=False)
 
         video_obj.distance = distance_ft
         video_obj.is_video_processed = True
+        video_obj.progress = 100
         video_obj.save()
 
-        # Cleanup temporary files
         for path in [temp_output_path, final_output_path]:
             if os.path.exists(path):
                 os.remove(path)

@@ -1,29 +1,50 @@
 import numpy as np
-
+import cv2
 
 DEFAULT_HSV = np.array([172, 180, 180], dtype=np.uint8)
 TOL_H, TOL_S, TOL_V = 20, 50, 50
 
 from scipy import interpolate, signal
-import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter, find_peaks
-
+import json
 import math
 
-# # 7 basic colors (BGR)
-# basic_bgr = np.uint8([
-#     [0,   0, 255],   # red
-#     [0,  69, 255],   # orange
-#     [0, 255, 255],   # yellow
-#     [0, 255,   0],   # green
-#     [255, 0,   0],   # blue
-#     [130, 0,  75],   # indigo
-#     [238, 130, 238]  # violet
-# ])
-# basic_hsv = cv2.cvtColor(basic_bgr.reshape(1, -1, 3), cv2.COLOR_BGR2HSV).reshape(-1, 3)
-#
-# YELLOW_IDX = 0
-# GREEN_IDX = 3
+
+
+def correct_white_balance(img, strength=1.8):
+    # Convert to LAB color space
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+
+    # Compute averages for a and b channels
+    avg_a = np.average(lab[:, :, 1])
+    avg_b = np.average(lab[:, :, 2])
+
+    # Calculate correction strength (lower = gentler)
+    correction_scale = (lab[:, :, 0] / 255.0) * strength
+
+    # Apply correction with clamping to avoid extreme shifts
+    lab[:, :, 1] = np.clip(lab[:, :, 1] - ((avg_a - 128) * correction_scale), 0, 255)
+    lab[:, :, 2] = np.clip(lab[:, :, 2] - ((avg_b - 128) * correction_scale), 0, 255)
+
+    # Convert back to BGR
+    balanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+    return balanced
+
+
+def correct_white_balance_deprecated(img):
+    result = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+
+    avg_a = np.average(result[:, :, 1])
+
+    avg_b = np.average(result[:, :, 2])
+
+    result[:, :, 1] = result[:, :, 1] - ((avg_a - 128) * (result[:, :, 0] / 255.0) * 2.)
+
+    result[:, :, 2] = result[:, :, 2] - ((avg_b - 128) * (result[:, :, 0] / 255.0) * 2.)
+
+    return cv2.cvtColor(result, cv2.COLOR_LAB2BGR)
+
 
 
 def clamp_box(x1, y1, x2, y2, w, h):
@@ -36,17 +57,17 @@ def clamp_box(x1, y1, x2, y2, w, h):
 
 
 def get_ankle_mask(frame, clahe=None):
+    # Get image dimensions
     h, w = frame.shape[:2]
-    half_h = h // 2
-    # target lower half cuz legs are in lower half
+    half_h = 0
     lower_half = frame[half_h:h, :]
 
-    #  basic BGR colors
+    # Define 7 basic BGR colors
     basic_bgr = np.uint8([
         [0, 0, 255],    # red
         [0, 69, 255],   # orange
         [0, 255, 255],  # yellow
-        [0, 255, 0],    # green
+        [0, 200, 0],    # green
         [255, 0, 0],    # blue
         [130, 0, 75],   # indigo
         [238, 130, 238],# violet
@@ -90,6 +111,7 @@ def get_ankle_mask(frame, clahe=None):
 
 
 
+
 def ankle_crop_color_detection(frame, CLAHE=None, model=None, CROP_HALF=32):
     h, w = frame.shape[:2]
 
@@ -123,7 +145,7 @@ def ankle_crop_color_detection(frame, CLAHE=None, model=None, CROP_HALF=32):
         mask_full[y1:y2, x1:x2] = cv2.bitwise_or(mask_full[y1:y2, x1:x2], yellow_mask)
 
 
-    return mask_full
+    return mask_full, ankle_keypoints
 
 
 
@@ -185,86 +207,7 @@ def detect_yellow_mask_lab(frame, clahe=None):
     return full_mask
 
 
-# def detect_bright_yellow_mask(frame_bgr, margin=20, bright_thresh=150):
-#     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-#     H, S, V = cv2.split(hsv)
-#     h_flat = H.reshape(-1).astype(np.int16)
-#     s_flat = S.reshape(-1).astype(np.int16)
-#     v_flat = V.reshape(-1)
-#
-#     hsv_pixels = np.stack([h_flat, s_flat], axis=1)
-#     basic_hsv_as = basic_hsv[:, :2].astype(np.int16)
-#     dists = np.sum((hsv_pixels[:, None, :] - basic_hsv_as[None, :, :]) ** 2, axis=2)
-#
-#     nearest_idx = np.argmin(dists, axis=1)
-#     mask_yellow = (nearest_idx == YELLOW_IDX)
-#
-#     dist_yellow = dists[:, YELLOW_IDX]
-#     dist_green = dists[:, GREEN_IDX]
-#     mask_yellow = mask_yellow & ((dist_green - dist_yellow) > margin)
-#     mask_yellow = mask_yellow & (v_flat > bright_thresh)
-#
-#     mask_yellow = mask_yellow.reshape(H.shape).astype(np.uint8) * 255
-#     mask_yellow = cv2.medianBlur(mask_yellow, 5)
-#     mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
-#     mask_yellow = cv2.morphologyEx(mask_yellow, cv2.MORPH_CLOSE, np.ones((5,5), np.uint8))
-#
-#     return mask_yellow, nearest_idx.reshape(H.shape)
 
-def simplify_to_primary_colors(frame):
-
-    # Increase contrast slightly
-    frame = cv2.convertScaleAbs(frame, alpha=1.5, beta=0)
-
-    # Define target colors (BGR)
-    palette = np.array([
-        [255,   0,   0],   # Blue
-        [0,     0, 255],   # Red
-        [0,   255,   0],   # Green
-        [0,   255, 255],   # Yellow
-        [255, 255, 255],   # White
-        [0,     0,   0],   # Black
-    ], dtype=np.uint8)
-
-    # Reshape frame to (num_pixels, 3)
-    pixels = frame.reshape((-1, 3)).astype(np.float32)
-
-    # Compute distance to each palette color
-    distances = np.linalg.norm(pixels[:, None, :] - palette[None, :, :], axis=2)
-
-    # Find nearest palette color index
-    nearest_idx = np.argmin(distances, axis=1)
-
-    # Map each pixel to nearest palette color
-    simplified = palette[nearest_idx].reshape(frame.shape).astype(np.uint8)
-
-    return simplified
-
-
-def detect_sine_cycle_in_window(x, smooth=True, window_len=11, min_prominence=0.2):
-
-    x = np.asarray(x)
-    n = len(x)
-
-    # Smooth lightly
-    if smooth:
-        win = min(window_len, n - (n + 1) % 2)
-        x = savgol_filter(x, win, polyorder=3)
-
-    # Detect significant peaks
-    peaks, _ = find_peaks(x, prominence=min_prominence)
-    troughs, _ = find_peaks(-x, prominence=min_prominence)
-
-    # Combine and sort
-    events = np.sort(np.concatenate([peaks, troughs]))
-
-    # Look for full cycle: peak-trough-peak or trough-peak-trough
-    for i in range(len(events) - 2):
-        a, b, c = events[i:i + 3]
-        if (a in peaks and b in troughs and c in peaks) or (a in troughs and b in peaks and c in troughs):
-            return a, c  # start, end of one cycle
-
-    return None
 
 def merge_close_regions(regions, max_gap=2):
     if not regions:
@@ -284,15 +227,15 @@ def merge_close_regions(regions, max_gap=2):
     return merged
 
 
-def get_flat_start(y, window=30, tol=10):
+def get_flat_start(y, window=30):
 
     flat_regions = []
     i = 0
     while i <= len(y) - window:
         segment = y[i:i+window]
-        if np.max(segment) - np.min(segment) < tol:  # small variation => flat
+        if np.all(segment == 0):
             flat_regions.append((i, i + window))
-            i += window  # skip to avoid overlapping regions
+            i += window
         else:
             i += 1
     flat_regions = merge_close_regions(flat_regions)
@@ -337,125 +280,23 @@ def distance_from_homography(pt1, pt2, H):
 
     return float(distance)
 
-def detect_biggest_jump(y, smooth_window=11, smooth_poly=2, start_thresh=-1.5, end_thresh=0):
-    y_smooth = savgol_filter(y, window_length=smooth_window, polyorder=smooth_poly)
-    dy = np.gradient(y_smooth)
-    dy[np.logical_and(dy > -10, dy < 10)] = 0
+def detect_biggest_jump(dy, smooth_window=11, smooth_poly=2, start_thresh=-1.5, end_thresh=0):
     start , end = 0 , len(dy)
     while start < len(dy) and dy[start] == 0:
         start += 1
 
     while end > start and dy[end - 1] == 0:
         end -= 1
-    # n_base = max(1, len(y_smooth) // 10)
-    # baseline = np.median(y_smooth[-n_base:])
-    #
-    # jump_start_idx = np.where(dy < start_thresh)[0]
-    # jump_end_idx = np.where((dy > end_thresh) & (y_smooth > baseline))[0]
-    #
-    # start, end = None, None
-    # max_jump_height = 0
-    #
-    # for s in jump_start_idx:
-    #     e_candidates = jump_end_idx[jump_end_idx > s]
-    #     if len(e_candidates) == 0:
-    #         continue
-    #     for e in e_candidates:
-    #         jump_height = np.max(y_smooth[s:e + 1]) - np.min(y_smooth[s:e + 1])
-    #         if jump_height > max_jump_height:
-    #             max_jump_height = jump_height
-    #             start, end = s, e
 
     return start - 3, end + 3
 
-
-def detect_jump_parabola(frames, pixel_y, filename="jump_parabola.png"):
-    y_smooth = savgol_filter(pixel_y, window_length=9, polyorder=2)
-
-    apex_idx = np.argmin(y_smooth)
-
-    start_idx, end_idx = apex_idx, apex_idx
-    while start_idx > 0 and y_smooth[start_idx] <= y_smooth[start_idx - 1]:
-        start_idx -= 1
-    while end_idx < len(y_smooth) - 1 and y_smooth[end_idx] <= y_smooth[end_idx + 1]:
-        end_idx += 1
-
-    jump_frames = frames[start_idx:end_idx + 1]
-    jump_y = pixel_y[start_idx:end_idx + 1]
-
-    coeffs = np.polyfit(jump_frames, jump_y, 2)
-    poly = np.poly1d(coeffs)
-
-    fit_x = np.linspace(jump_frames[0], jump_frames[-1], 300)
-    fit_y = poly(fit_x)
-
-    plt.figure(figsize=(10, 6))
-    plt.plot(frames, pixel_y, 'bo-', label='Original Y')
-    plt.plot(frames, y_smooth, 'g--', label='Smoothed Y')
-    plt.plot(jump_frames, jump_y, 'ro', label='Detected Jump Region')
-    plt.plot(fit_x, fit_y, 'k-', label='Fitted Parabola')
-    plt.xlabel('Frame')
-    plt.ylabel('Pixel Y')
-    plt.title('Jump Detection and Parabola Fit')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(filename)
-    plt.close()
-
-    # Optional: Return info about the jump
-    return {
-        'start_frame': jump_frames[0],
-        'end_frame': jump_frames[-1],
-        'apex_frame': frames[apex_idx],
-        'coefficients': coeffs
-    }
-
-def save_frame_vs_pixel_graph(pixel_y, filename="frame_vs_pixel_y.png"):
-    plt.figure(figsize=(10, 6))
-    frames = [i for i in range(len(pixel_y))]
-    plt.plot(frames, pixel_y, label='Pixel Y Position', color='b')
-    plt.xlabel('Frame Number')
-    plt.ylabel('Pixel Y Position')
-    plt.title('Frame vs Pixel Y Position')
-    plt.grid(True)
-    plt.legend()
-
-    # Save the graph to a file
-    plt.savefig(filename)
-    plt.close()  # Close the plot to avoid display
 
 
 import cv2
 import numpy as np
 
-def simplify_with_yellow_focus(frame):
-
-    frame = cv2.convertScaleAbs(frame, alpha=1.5, beta=0)
-
-    palette = np.array([
-        [255,   0,   0],   # Blue
-        [0,     0, 255],   # Red
-        [0,   255,   0],   # Green
-        [0,   255, 255],   # Yellow
-        [255, 255, 255],   # White
-        [0,     0,   0],   # Black
-        [0,   165, 255],   # Orange (helps separate reddish-yellow tones)
-    ], dtype=np.uint8)
-
-    pixels = frame.reshape((-1, 3)).astype(np.float32)
-    distances = np.linalg.norm(pixels[:, None, :] - palette[None, :, :], axis=2)
-    nearest_idx = np.argmin(distances, axis=1)
-    simplified = palette[nearest_idx].reshape(frame.shape).astype(np.uint8)
-
-    # Step 4: Create yellow mask
-    yellow_color = np.array([0, 255, 255], dtype=np.uint8)
-    yellow_mask = cv2.inRange(simplified, yellow_color, yellow_color)
-
-    return simplified, yellow_mask
 
 
-
-# Function: world → image projection using cv2.perspectiveTransform
 def world_to_image(points, H):
     pts = np.array(points, dtype=np.float32).reshape(-1, 1, 2)  # (N,1,2)
     projected = cv2.perspectiveTransform(pts, H)
@@ -464,11 +305,10 @@ def world_to_image(points, H):
 def filter_and_smooth(coords, window_size=5, threshold=5):
     coords = np.array(coords, dtype=np.float64)
     N = len(coords)
-
-    # Step 1: Robust outlier detection using rolling median
+    if N == 0:
+        return coords
     coords_filtered = coords.copy()
     for i in range(N):
-        # Define local window boundaries
         start = max(0, i - window_size)
         end = min(N, i + window_size + 1)
 
@@ -477,8 +317,6 @@ def filter_and_smooth(coords, window_size=5, threshold=5):
 
         if distance > threshold:
             coords_filtered[i] = np.array([np.nan, np.nan])
-
-    # Step 2: Interpolation over NaN points
     valid_mask = ~np.isnan(coords_filtered[:, 0])
     x_valid = np.where(valid_mask)[0]
     y_valid = coords_filtered[valid_mask]
@@ -494,7 +332,6 @@ def filter_and_smooth(coords, window_size=5, threshold=5):
     x_all = np.arange(N)
     coords_interpolated = np.vstack((interp_func_x(x_all), interp_func_y(x_all))).T
 
-    # Step 3: Smoothing with Savitzky-Golay filter
     smoothed_x = signal.savgol_filter(coords_interpolated[:, 0], window_length=7, polyorder=2, mode='nearest')
     smoothed_y = signal.savgol_filter(coords_interpolated[:, 1], window_length=7, polyorder=2, mode='nearest')
 
@@ -502,74 +339,14 @@ def filter_and_smooth(coords, window_size=5, threshold=5):
 
     return smoothed_coords
 
-def shadow_removal(img):
-    rgb_planes = cv2.split(img)
 
-    result_planes = []
-    result_norm_planes = []
-    for plane in rgb_planes:
-        dilated_img = cv2.dilate(plane, np.ones((7, 7), np.uint8))
-        bg_img = cv2.medianBlur(dilated_img, 21)
-        diff_img = 255 - cv2.absdiff(plane, bg_img)
-        norm_img = cv2.normalize(diff_img, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)
-        result_planes.append(diff_img)
-        result_norm_planes.append(norm_img)
-
-    result = cv2.merge(result_planes)
-    result_norm = cv2.merge(result_norm_planes)
-    return result_norm
-
-def break_into_primary_colors(frame):
-    """
-    Accepts a cv2 frame (BGR format) and returns three images:
-    one each for Blue, Green, and Red primary channels.
-    """
-    # Split into B, G, R channels
-    b, g, r = cv2.split(frame)
-
-    # Create empty image with same shape
-    zeros = np.zeros_like(b)
-
-    # Merge each primary color
-    blue_img = cv2.merge([b, zeros, zeros])
-    green_img = cv2.merge([zeros, g, zeros])
-    red_img = cv2.merge([zeros, zeros, r])
-
-    return blue_img, green_img, red_img
-
-def preprocess_for_yellow_detection(img, clahe):
-    # Convert to LAB to normalize brightness
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-
-    # Apply CLAHE on L channel to reduce shadows
-    l_eq = clahe.apply(l)
-
-    # Merge and convert back to BGR
-    lab_eq = cv2.merge((l_eq, a, b))
-    bgr_eq = cv2.cvtColor(lab_eq, cv2.COLOR_LAB2BGR)
-
-    # Slightly boost saturation to make colors (like yellow) more vivid
-    hsv = cv2.cvtColor(bgr_eq, cv2.COLOR_BGR2HSV).astype(np.float32)
-    h, s, v = cv2.split(hsv)
-
-    # Increase saturation, but clip to valid range
-    s = np.clip(s * 1.25, 0, 255)
-    v = np.clip(v * 1.05, 0, 255)  # small brightness boost
-
-    hsv_enhanced = cv2.merge((h, s, v)).astype(np.uint8)
-    vibrant_bgr = cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
-
-    return vibrant_bgr
 
 def equalize_image(img, clahe):
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
 
-    # Apply CLAHE to L channel (enhances brightness, reduces shadows)
     l_eq = clahe.apply(l)
 
-    # Merge back and convert to BGR
     lab_eq = cv2.merge((l_eq, a, b))
     enhanced_frame = cv2.cvtColor(lab_eq, cv2.COLOR_LAB2BGR)
     return enhanced_frame
@@ -681,3 +458,197 @@ def detect_and_measure_image(image_path, output_path, homography):
         return dist_cm
     else:
         return None
+
+
+
+def detect_carpet_segment(frame, selected_point=None):
+
+    h, w, _ = frame.shape
+    lower_half = frame[h // 2:, :]
+
+    hsv = cv2.cvtColor(lower_half, cv2.COLOR_BGR2HSV)
+
+    DEFAULT_HSV = np.array([80, 80, 40], dtype=np.uint8)
+    TOL_H, TOL_S, TOL_V = 25, 200, 65
+
+    center = DEFAULT_HSV.astype(int)
+
+    # --- compute tolerance-based range safely ---
+    lower_hsv = np.array([
+        max(center[0] - TOL_H, 0),
+        max(center[1] - TOL_S, 0),
+        max(center[2] - TOL_V, 0)
+    ], dtype=np.uint8)
+
+    upper_hsv = np.array([
+        min(center[0] + TOL_H, 179),
+        min(center[1] + TOL_S, 255),
+        min(center[2] + TOL_V, 255)
+    ], dtype=np.uint8)
+
+    lower_hsv = np.array([
+        0, 0, 0
+    ], dtype=np.uint8)
+
+    upper_hsv = np.array([
+        179, 255, 65
+    ], dtype=np.uint8)
+    # --- Mask for target color ---
+    mask = cv2.inRange(hsv, lower_hsv, upper_hsv)
+
+    # --- Ignore white/desaturated areas ---
+    s_channel = hsv[:, :, 1]
+    mask[s_channel < 40] = 0
+
+    # --- Clean mask carefully ---
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if num_labels > 1:
+        largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+        mask = np.uint8(labels == largest_label) * 255
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    segment_mask = np.zeros((h, w), dtype=np.uint8)
+
+    if contours:
+        selected_contour = None
+
+        if selected_point:
+            px, py = selected_point
+            if py >= h // 2:
+                py_adj = py - h // 2
+                min_dist = float("inf")
+                for cnt in contours:
+                    M = cv2.moments(cnt)
+                    if M["m00"] == 0:
+                        continue
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    dist = np.hypot(px - cx, py_adj - cy)
+                    if dist < min_dist:
+                        min_dist = dist
+                        selected_contour = cnt
+            else:
+                selected_contour = max(contours, key=cv2.contourArea)
+        else:
+            selected_contour = max(contours, key=cv2.contourArea)
+
+        if selected_contour is not None:
+            cv2.drawContours(segment_mask[h // 2:, :], [selected_contour], -1, 255, -1)
+
+    segmented_region = cv2.bitwise_and(frame, frame, mask=segment_mask)
+
+    return segment_mask, segmented_region
+
+def separate_color_by_hsv_deprecated(segmented_region, target_hsv=(110, 122, 140), tol_h=20, tol_s=80, tol_v=80):
+
+    hsv = cv2.cvtColor(segmented_region, cv2.COLOR_BGR2HSV)
+
+    h, s, v = target_hsv
+    lower_hsv = np.array([
+        max(h - tol_h, 0),
+        max(s - tol_s, 0),
+        max(v - tol_v, 0)
+    ], dtype=np.uint8)
+    upper_hsv = np.array([
+        min(h + tol_h, 179),
+        min(s + tol_s, 255),
+        min(v + tol_v, 255)
+    ], dtype=np.uint8)
+
+    mask = cv2.inRange(hsv, lower_hsv, upper_hsv)
+
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+
+    separated = cv2.bitwise_and(segmented_region, segmented_region, mask=mask)
+
+    return mask, separated
+
+
+def separate_color_by_hsv(
+    segmented_region,
+    target_hsv=(110, 122, 140),
+    tol_h=40, tol_s=80, tol_v=80
+):
+
+    # Convert to HSV
+    hsv = cv2.cvtColor(segmented_region, cv2.COLOR_BGR2HSV)
+    h, s, v = target_hsv
+
+    # --- Build a fixed color palette ---
+    # target color
+    target_color = np.uint8([[target_hsv]])
+    target_bgr = cv2.cvtColor(target_color, cv2.COLOR_HSV2BGR)[0, 0]
+
+    # two dark tones
+    dark_gray = np.array([50, 50, 50], dtype=np.uint8)
+    black = np.array([0, 0, 0], dtype=np.uint8)
+
+    palette = np.array([target_bgr, dark_gray, black], dtype=np.uint8)
+
+    img = segmented_region.reshape((-1, 3)).astype(np.float32)
+
+    distances = np.linalg.norm(img[:, None, :] - palette[None, :, :].astype(np.float32), axis=2)
+    labels = np.argmin(distances, axis=1)
+
+    target_cluster = 0  # index 0 = target color
+    mask = np.where(labels == target_cluster, 255, 0).astype(np.uint8)
+    mask = mask.reshape(segmented_region.shape[:2])
+
+        # mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    # mask = cv2.erode(mask, np.ones((3, 3), np.uint8), iterations=1)
+
+    separated = cv2.bitwise_and(segmented_region, segmented_region, mask=mask)
+
+    return mask, separated
+
+
+def get_mask_centers(mask, return_largest=False):
+
+    mask_bin = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)[1]
+
+    contours, _ = cv2.findContours(mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None if return_largest else []
+
+    centers = []
+    for cnt in contours:
+        M = cv2.moments(cnt)
+        if M["m00"] == 0:
+            continue
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        centers.append((cx, cy))
+
+    if not centers:
+        return None if return_largest else []
+
+    if return_largest:
+        largest = max(contours, key=cv2.contourArea)
+        M = cv2.moments(largest)
+        if M["m00"] == 0:
+            return None
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        return (cx, cy)
+    else:
+        return centers
+
+def process_frame_for_color_centers(frame, selected_point=None, target_hsv=(110, 122, 140)):
+
+
+    segment_mask, segmented_region = detect_carpet_segment(frame, selected_point=selected_point)
+    cv2.imwrite("temp.jpg", segmented_region)
+    if segmented_region is None or np.count_nonzero(segment_mask) == 0:
+        print("No carpet region detected.")
+        return []
+
+    mask, separated = separate_color_by_hsv(segmented_region, target_hsv=target_hsv)
+
+    centers = get_mask_centers(mask, return_largest=False)
+
+    return centers
