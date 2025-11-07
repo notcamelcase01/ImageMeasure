@@ -25,7 +25,7 @@ def upload_video(request):
         pet_type = request.POST.get('pet_type', 'BT')
         duration = float(request.POST.get('duration', 0))
         to_be_processed = False
-        if pet_type == 'BROAD_JUMP' or pet_type == "SIT_THROW" or pet_type == "SIT_REACH":
+        if pet_type != "ENDURANCE":
             to_be_processed = True
         obj = PetVideos.objects.create(
             name=video.name,
