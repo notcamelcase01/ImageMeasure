@@ -350,7 +350,6 @@ def process_image(request):
         _, buffer = cv2.imencode('.jpg', output_img)
         encoded_image = base64.b64encode(buffer).decode('utf-8')
 
-        # ✅ Save HSV value in singleton model
         singleton = SingletonHomographicMatrixModel.load()
         singleton.hsv_value = {'h': int(h), 's': int(s), 'v': int(v)}
         singleton.tracker_hsv_value = {'h': int(h), 's': int(s), 'v': int(v)}

@@ -49,7 +49,6 @@ def process_video_task(petvideo_id):
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         out = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
-        #temp = cv2.VideoWriter("this.mp4", fourcc, fps, (width, height))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         trajectory = []
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -63,9 +62,7 @@ def process_video_task(petvideo_id):
             frame = correct_white_balance(frame)
             frame = cv2.resize(frame, (1280, 720))
             mask, ankle_points = ankle_crop_color_detection(frame, CLAHE=clahe, model=model)
-            mask_color = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
 
-            #temp.write(mask_color)
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             detected_points = [0, 0] if len(ankle_points) < 2 else list(ankle_points[-1])
@@ -116,7 +113,7 @@ def process_video_task(petvideo_id):
         pt1 = trajectory[start if start else 0, :]
         pt2 = trajectory[end if end else len(trajectory) - 1, :]
         pt1[-1] += 10
-        pt2[-1] += 10 #offset correction
+        pt2[-1] += 10 #offset correction to get marked point closer to ground
         print(pt1, pt2)
         trajectory = [tuple(map(int, point)) for point in trajectory]
         #sorted_points = sorted(trajectory, key=lambda p: p[1], reverse=True)
@@ -150,7 +147,7 @@ def process_video_task(petvideo_id):
             ret, frame = cap.read()
             if not ret:
                 break
-            frame = correct_white_balance(frame)
+            # frame = correct_white_balance(frame)
             frame = cv2.resize(frame, (1280, 720))
             if start <= traj_cnt <= end:
                 overlay = frame.copy()
@@ -170,7 +167,6 @@ def process_video_task(petvideo_id):
             out.write(frame )
         cap.release()
         out.release()
-        #temp.release()
         # --- ffmpeg encode ---
         import subprocess
         subprocess.run([
