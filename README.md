@@ -19,10 +19,10 @@ Distance measurement from video is done via image processing algorithm and AI (P
 
 ### Calibration
 
-To estimate distane in image we need to map points in image to real world. We use concept of [homography](https://docs.opencv.org/4.x/d9/dab/tutorial_homography.html), which is
-backbone of this application. In short to map image to real world we place 6 points with knowin relative distance on ground and take a image, in that image using image processing we 
+To estimate distance in image we need to map points in image to real world. We use concept of [homography](https://docs.opencv.org/4.x/d9/dab/tutorial_homography.html), which is
+backbone of this application. In short, to map image to real world we place 6 points with know relative distance on ground and take a image, in that image using image processing we 
 detect those points and get their **image** coordiantes in pixel. Since we know their relative distances we can have a real life coordinate corresponding to each pixel cooridinate in image
-that allows us to create a Homography MAP. Which is a matrix(2nd order tensor)  allowing us transform vectors in image to real world.
+that allows us to create a Homography MAP. Which is a matrix(2nd order tensor) allowing us transform coordinates in image to real world.
 
 
 The points are placed on black **calibration sheet** to enhance contrast. algorithm works in three steps show below
@@ -35,16 +35,15 @@ The points are placed on black **calibration sheet** to enhance contrast. algori
 
 <img width="500" alt="image" src="https://github.com/user-attachments/assets/f065c4a7-a024-4309-acd7-dcb43757bd77" />
 
-Example of floor disntaces estimation is shown below , all distances can we cross-checked from real life badminton court distances
+Example of floor distances estimation is shown below , all distances can be cross-checked from real life badminton court distances
 
 <img width="500"  alt="image" src="https://github.com/user-attachments/assets/8d1258ac-5212-408a-b233-d49e24525953" />
 
 
 ### Estimation of required distance
 
-After calibration we can get disntace between given **two points** on floor but how do we get those two points, in case of broad jump we track a marker placed at ankles of player
-the starting frame and ending frame is chosen, we also use AI - Pose estimatoin (YOLO) to narrow down on area where we have to search for marker. It is color based object detection
-that quantize image into 7 colors and depending on color of marker we chose one of the 7 color to detect marker
+After calibration we can get distance between **two points** on floor but how do we get those two points, in case of broad jump we track a **marker** placed at ankles of participant
+the starting frame and ending frame of jump is chosen, we also use AI - Pose estimatoin (YOLO) to narrow down on area where we have to search for marker. It is color based object detection that quantize image into 7 colors and depending on color of marker we chose one of the 7 color to detect marker.
 
 
 https://github.com/user-attachments/assets/8ca7a34d-6a3a-4435-b916-86c3047dce4e
@@ -72,7 +71,7 @@ Shows detected points
 Gets processed video from video id
 
 ### /process_image
-Takes a image and image coordinate as input, savse the color of pixel at the coordiante, this function is not used in general unless there is color change in markers
+Takes a image and image coordinate as input, save the color of pixel at the coordiante, this function is not used in general unless there is color change in markers
 of calibration sheet
 
 
