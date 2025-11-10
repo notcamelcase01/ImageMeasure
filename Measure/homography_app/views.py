@@ -17,6 +17,11 @@ import base64
 
 @csrf_exempt
 def upload_video(request):
+    """
+    Uploads the video to db,
+    if video is of test which have distance as measurable quantity,
+    program sends it to processing for distance calculations
+    """
     if request.method == 'POST' and request.FILES.get('video'):
         video = request.FILES['video']
 
@@ -48,6 +53,9 @@ def upload_video(request):
 
 @csrf_exempt
 def upload_calibration_video(request):
+    """
+    recieves a video , extract on frame from video and marks calibration points
+    """
     if request.method == 'POST' and request.FILES.get('video'):
         video_file = request.FILES['video']
         unit_distance = float(request.POST.get('square_size', 0.984252))
@@ -322,6 +330,9 @@ def upload_calibration_video_deprecated(request):
 
 @csrf_exempt
 def process_image(request):
+    """
+    Recieves an image and coorinate of point on image, stores the color of that point
+    """
     if request.method != 'POST':
         return JsonResponse({'error': 'Only POST allowed'}, status=405)
 
