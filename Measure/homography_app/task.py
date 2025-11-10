@@ -52,7 +52,7 @@ def process_video_task(petvideo_id):
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         trajectory = []
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        model = YOLO("yolov8n-pose.pt")
+        model = YOLO("yolov8m-pose.pt")
         current_frame = 0
         last_logged_progress = 0
         while True:
@@ -112,8 +112,10 @@ def process_video_task(petvideo_id):
             start, end = 0, len(trajectory) - 1
         pt1 = trajectory[start if start else 0, :]
         pt2 = trajectory[end if end else len(trajectory) - 1, :]
+        pt1[0] -= 5
+        pt2[0] -= 5
         pt1[-1] += 10
-        pt2[-1] += 10 #offset correction to get marked point closer to ground
+        pt2[-1] += 10 #offset correction to get marked point closer to ground and heels
         print(pt1, pt2)
         trajectory = [tuple(map(int, point)) for point in trajectory]
         #sorted_points = sorted(trajectory, key=lambda p: p[1], reverse=True)
