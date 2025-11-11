@@ -55,24 +55,133 @@ and distance is captured based on positon of marker attached to participants sho
 
 ## END POINTS
 
-### /upload_video
-Takes a video file input, string input of student name and test type (broad jump, sit and reach etc)
+### POST /upload_video
+Uploads a participant’s video. Depedning on whether test type requires distance calculation or not, the video is sent for processing.
 
-### /list_videos
-List all the videos
+Form data
+- `video` (File, required) – Video file
+- `participant_name` (String, optional) – Default: "NoName"
+- `pet_type` (String, optional) – Default: "BT"
+- `duration` (Float, optional) – Default: 0
 
-### /calibrate
-Takes a 1 second short video as input and saves homopgaphy matrix if the calibratoin sheet is found in every frame of video
+Success response 
+```
+{ "status": "success", "name": "video.mp4", "participant_name": "John", "pet_type": "BT" }
+```
 
-### /calibration_info
-Shows detected points
+Error response
+```
+{ "status": "error description" }
+```
 
-### /get_processed_video
-Gets processed video from video id
 
-### /process_image
-Takes a image and image coordinate as input, save the color of pixel at the coordiante, this function is not used in general unless there is color change in markers
-of calibration sheet
+
+### GET /list_videos
+Returns list of processed videos
+
+Success Response
+```
+{
+  "videos": [
+    {
+      "id": 1,
+      "name": "test.mp4",
+      "file": "/media/videos/test.mp4",
+      "participant_name": "John",
+      "pet_type": "BT",
+      "distance": 12.5,
+      "is_processed": true,
+      "progress": 100,
+      "duration": 8.5,
+      "to_be_processed": false
+    }
+  ]
+}
+```
+
+Error Response
+```
+{"status": "error description"}
+```
+
+
+### POST /calibrate
+Uploads a calibration video, extracts a frame, detects calibration points, and computes a homography matrix.
+
+Form data
+- `video` (File, required) – Calibration video
+- `square_size` (Float, optional) – Unit distance (default: 0.984252)
+
+Success Response 
+```
+{ "status": "success" }
+```
+
+Error Response
+```
+{"status": "error description"}
+```
+### GET /calibration_info
+Returns stored calibration details including matrix and image URLs.
+
+Success Response
+```
+{
+  "status": "success",
+  "calibration_info": {
+    "square_size": 0.984252,
+    "matrix_url": "/media/homography.json",
+    "image_url": "/media/calibrated.jpg"
+  }
+}
+```
+
+Error Response
+```
+{"status" : "error desription"}
+```
+
+### GET /get_processed_video
+Fetches processed video URL by ID.
+
+Query Parameter:
+- `id` (Integer, required) – Video ID
+
+Success Response
+```
+{
+  "status": "success",
+  "processed_video_url": "http://example.com/stream_video/output.mp4/"
+}
+```
+
+Error Response
+```
+{"status" : "error description"}
+```
+
+### POST /process_image
+Takes a image and image coordinate as input, save the color of pixel at the coordiante, this function is not used in general unless there is color change in markers of calibration sheet
+
+Form Data:
+- `image` (File, required) – Input image file
+- `x` (Integer, required) – X-coordinate of the selected point
+- `y` (Integer, required) – Y-coordinate of the selected point
+
+Success Response
+```
+{
+  "hsv": { "h": 120, "s": 85, "v": 200 },
+  "image_base64": "data:image/jpeg;base64,<encoded_image>"
+}
+```
+
+Error Response
+```
+{"status": "error description"}
+```
+
+
 
 
 
