@@ -14,12 +14,94 @@ import glob
 from scipy.signal import savgol_filter
 from ultralytics import YOLO
 
+from .sit_and_reach_helper_ import detect_yellow_strip_positions_mask, find_three_centers_from_mask, \
+    estimate_distance_between_points
 
 logger = logging.getLogger('homography_app')
 
 
 @background(schedule=0, remove_existing_tasks=True)
-def process_video_task(petvideo_id, enable_color_marker_tracking=True, enable_start_end_detector=True):
+def process_video_task(petvideo_id, enable_color_marker_tracking=True, enable_start_end_detector=True, test_id=""):
+    if test_id == "":
+        logger.info(f"[process_video_task] INVALID TEST ID: {petvideo_id}")
+        return
+    if test_id == "vPbXoPK4":
+        logger.info(f"[process_video_task] Starting processing for PetVideo ID (Sit and reach variant): {petvideo_id}")
+        try:
+            video_obj = PetVideos.objects.get(id=petvideo_id)
+        except PetVideos.DoesNotExist:
+            logger.error(f"[process_video_task] PetVideo ID {petvideo_id} does not exist")
+            return
+        video_path = video_obj.file.path
+        original_name = os.path.basename(video_obj.file.name)
+        if video_obj.processed_file:
+            video_obj.processed_file.delete(save=False)
+            video_obj.processed_file = None
+        output_dir = os.path.join(settings.MEDIA_ROOT, 'post_processed_video')
+        os.makedirs(output_dir, exist_ok=True)
+
+        temp_output_path = os.path.join(output_dir, f"temp_{original_name}")
+        final_output_path = os.path.join(output_dir, f"processed_{original_name}")
+        try:
+            cap = cv2.VideoCapture(video_path)
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            out = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
+            video_obj.is_video_processed = False
+            video_obj.progress = 0
+            cap = cv2.VideoCapture(video_path)
+            homograph_obj = SingletonHomographicMatrixModel.load()
+            mask_path = homograph_obj.mask.path
+            mask_img = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            distance = 1
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                f1 = detect_yellow_strip_positions_mask(frame, mask_img, int(720 * 0.75))
+                x = find_three_centers_from_mask(f1)
+
+                centers_sorted = sorted(x, key=lambda c: c[0], reverse=True)
+                distance = estimate_distance_between_points(centers_sorted)
+
+                y = 3 * height // 4
+                dot_length = 10
+                gap = 5
+
+                for x in range(0, width, dot_length + gap):
+                    cv2.line(frame, (x, y), (x + dot_length, y), (0, 255, 0), 2)
+                frame = cv2.resize(frame, (width, height))
+                out.write(frame)
+            cap.release()
+            out.release()
+            import subprocess
+            subprocess.run([
+                'ffmpeg', '-i', temp_output_path,
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+                '-c:a', 'aac', '-movflags', '+faststart', '-y',
+                final_output_path
+            ], check=True)
+
+            with open(final_output_path, 'rb') as f:
+                video_obj.processed_file.save(f"processed_{original_name}", File(f), save=False)
+
+            video_obj.distance = distance
+            video_obj.is_video_processed = True
+            video_obj.progress = 100
+            video_obj.save()
+
+            for path in [temp_output_path, final_output_path]:
+                if os.path.exists(path):
+                    os.remove(path)
+
+            logger.info(f"[process_video_task] Finished processing PetVideo ID: {petvideo_id}")
+
+        except Exception as e:
+            logger.error(f"[process_video_task] Error processing PetVideo ID {petvideo_id}: {e}", exc_info=True)
+        return
     logger.info(f"[process_video_task] Starting processing for PetVideo ID: {petvideo_id}")
     logger.info(f"[process_video_task] color_marker_tracking is {enable_color_marker_tracking}")
     logger.info(f"[process_video_task] jump detection is {enable_start_end_detector}")

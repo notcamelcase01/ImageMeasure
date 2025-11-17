@@ -11,9 +11,11 @@ import tempfile
 from .helper import merge_close_points, DEFAULT_HSV, TOL_S, TOL_H, TOL_V, order_points_anticlockwise, \
     process_frame_for_color_centers, correct_white_balance
 from .models import PetVideos, SingletonHomographicMatrixModel
+from .sit_and_reach_helper_ import detect_carpet_segment_p
 from .task import process_video_task
 from django.conf import settings
 import base64
+
 
 @csrf_exempt
 def upload_video(request):
@@ -52,7 +54,7 @@ def upload_video(request):
                 'to_be_processed': to_be_processed,
             }
         )
-        process_video_task(obj.id, enable_color_marker_tracking=enable_color_marker_tracking, enable_start_end_detector=enable_start_end_detector)
+        process_video_task(obj.id, enable_color_marker_tracking=enable_color_marker_tracking, enable_start_end_detector=enable_start_end_detector, test_id=test_id)
         return JsonResponse({
             'status': 'success',
             'name': obj.name,
@@ -70,6 +72,7 @@ def upload_calibration_video(request):
     """
     if request.method == 'POST' and request.FILES.get('video'):
         video_file = request.FILES['video']
+        testId = request.POST.get('test_id', "not_sit_and_reach")
         unit_distance = float(request.POST.get('square_size', 0.984252))
 
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp:
@@ -116,6 +119,18 @@ def upload_calibration_video(request):
             }, status=400)
         frame = cv2.resize(frame, (1280, 720))
         cv2.imwrite("cal.jpg", frame)
+        if testId == "vPbXoPK4":
+            mask, _, _  = detect_carpet_segment_p(frame)
+            singleton = SingletonHomographicMatrixModel.load()
+            _, buffer = cv2.imencode('.jpg', mask)
+            singleton.mask.save(
+                'mask.jpg',
+                ContentFile(buffer.tobytes()),
+                save=True
+            )
+            return JsonResponse({
+                'status': 'success',
+            })
         singleton = SingletonHomographicMatrixModel.load()
         if singleton.hsv_value:  # will be {} if not set
             h = singleton.hsv_value.get('h', DEFAULT_HSV[0])
@@ -183,7 +198,7 @@ def upload_calibration_video(request):
         if homography_obj.file:
             homography_obj.file.delete(save=False)
         homography_obj.file.save(
-            'calibrated.jpg',
+            'mask.jpg',
             ContentFile(buffer.tobytes()),
             save=True
         )
@@ -323,7 +338,7 @@ def upload_calibration_video_deprecated(request):
         if homography_obj.file:
             homography_obj.file.delete(save=False)
         homography_obj.file.save(
-            'calibrated.jpg',
+            'mask.jpg',
             ContentFile(buffer.tobytes()),
             save=True
         )
