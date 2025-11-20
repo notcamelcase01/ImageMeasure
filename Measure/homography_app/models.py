@@ -36,10 +36,12 @@ def delete_files_on_model_delete(sender, instance, **kwargs):
 
 
 
+
 class SingletonHomographicMatrixModel(models.Model):
     # homograph is in media/homograph
     matrix = models.FileField(upload_to='homograph/')
     file = models.FileField(upload_to="calibrated_images/")
+    mask = models.FileField(upload_to="masks/", blank=True, null=True)
     unit_distance = models.FloatField(default=60)
     hsv_value = models.JSONField(default=dict)
     tracker_hsv_value = models.JSONField(default=dict)
